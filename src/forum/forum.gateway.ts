@@ -8,21 +8,27 @@ import {
   OnGatewayDisconnect,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { ForumService } from './forum.service';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
+import { ForumService } from './forum.service';
 
-@WebSocketGateway({ cors: { origin: '*' }, namespace: '/forum' })
+@WebSocketGateway({
+  cors: { origin: '*' },
+  namespace: '/forum',
+})
 export class ForumGateway implements OnGatewayConnection, OnGatewayDisconnect {
-  @WebSocketServer() server: Server;
+  @WebSocketServer()
+  server: Server;
+
+  // Map userId -> socketId pour cibler les notifications
+  private connectedUsers = new Map<string, string>();
 
   constructor(
-    private readonly forumService: ForumService,
-    private readonly jwtService: JwtService,
-    private readonly configService: ConfigService,
+    private jwtService: JwtService,
+    private configService: ConfigService,
+    private forumService: ForumService,
   ) {}
 
-  // Authentification à la connexion
   async handleConnection(client: Socket) {
     try {
       const token =
@@ -32,63 +38,67 @@ export class ForumGateway implements OnGatewayConnection, OnGatewayDisconnect {
         secret: this.configService.get('JWT_SECRET'),
       });
       client.data.userId = payload.sub;
-      console.log(`[WS] Connecte: userId=${payload.sub}`);
+      client.data.role = payload.role;
+      this.connectedUsers.set(payload.sub, client.id);
+      console.log(`User ${payload.sub} connecté via WebSocket`);
     } catch {
-      client.disconnect(); // Déconnecter si token invalide
+      client.disconnect();
     }
   }
 
   handleDisconnect(client: Socket) {
-    console.log(`[WS] Deconnecte: ${client.id}`);
-  }
-
-  // CLIENT -> SERVEUR : rejoindre un sujet (room)
-  @SubscribeMessage('joinRoom')
-  async handleJoinRoom(
-    @MessageBody() sujetId: number,
-    @ConnectedSocket() client: Socket,
-  ) {
-    await client.join(`sujet_${sujetId}`);
-    // Envoyer l'historique au nouveau membre
-    const messages = await this.forumService.getMessages(sujetId);
-    client.emit('messageHistory', messages);
-  }
-
-  // CLIENT -> SERVEUR : quitter un sujet
-  @SubscribeMessage('leaveRoom')
-  handleLeaveRoom(
-    @MessageBody() sujetId: number,
-    @ConnectedSocket() client: Socket,
-  ) {
-    client.leave(`sujet_${sujetId}`);
-  }
-
-  // CLIENT -> SERVEUR : envoyer un message
-  @SubscribeMessage('sendMessage')
-  async handleSendMessage(
-    @MessageBody() payload: { sujetId: number; contenu: string },
-    @ConnectedSocket() client: Socket,
-  ) {
-    const userId = client.data.userId;
-    if (!userId) {
-      client.emit('error', { message: 'Non authentifie' });
-      return;
+    if (client.data.userId) {
+      this.connectedUsers.delete(client.data.userId);
     }
-
-    const message = await this.forumService.createMessage(
-      payload.sujetId,
-      { contenu: payload.contenu },
-      userId,
-    );
-
-    // SERVEUR -> tous les membres de la room
-    this.server.to(`sujet_${payload.sujetId}`).emit('newMessage', message);
   }
 
-  // CLIENT -> SERVEUR : supprimer un message
-  @SubscribeMessage('deleteMessage')
-  async handleDeleteMessage(@MessageBody() messageId: number) {
-    await this.forumService.removeMessage(messageId);
-    this.server.emit('messageDeleted', { messageId });
+  // Rejoindre un thread (room Socket.IO)
+  @SubscribeMessage('joinThread')
+  handleJoinThread(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() threadId: string,
+  ) {
+    client.join(`thread:${threadId}`);
+    client.emit('joinedThread', { threadId });
+  }
+
+  // Quitter un thread
+  @SubscribeMessage('leaveThread')
+  handleLeaveThread(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() threadId: string,
+  ) {
+    client.leave(`thread:${threadId}`);
+  }
+
+  // Envoyer un message via WebSocket
+  @SubscribeMessage('sendMessage')
+  async handleMessage(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    data: {
+      threadId: string;
+      content: string;
+      replyToId?: string;
+    },
+  ) {
+    const message = await this.forumService.sendMessage(
+      data.threadId,
+      client.data.userId,
+      data.content,
+      undefined,
+      data.replyToId,
+    );
+    // Broadcast le message à tous dans le thread
+    this.server.to(`thread:${data.threadId}`).emit('newMessage', message);
+    return message;
+  }
+
+  // Méthode publique pour envoyer une notification ciblée
+  sendNotificationToUser(userId: string, notification: any) {
+    const socketId = this.connectedUsers.get(userId);
+    if (socketId) {
+      this.server.to(socketId).emit('notification', notification);
+    }
   }
 }
