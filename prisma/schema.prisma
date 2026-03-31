@@ -1,0 +1,79 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client { 
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+  // moduleFormat  = "cjs"    choftha fl documentaion
+}
+
+datasource db {
+  provider = "postgresql"
+}
+enum Role{
+  ETUDIANT
+  ENSEIGNANT
+  AGENT
+  ADMIN
+}
+
+enum TypeAgent{
+  ADMINISTRATEUR
+  TECHNICIEN
+  SUPPORT
+}
+
+model Utilisateur {
+  id Int @id @default(autoincrement())
+  email String @unique
+  nom String
+  prenom String
+  mdp String
+  photo String?
+  roles Role
+  refreshTokenHash String?
+  emailVerified Boolean @default(false)
+  createdAt DateTime @default(now())
+
+  etudiant Etudiant?
+  enseignant Enseignant?
+  agent Agent?
+  admin Admin?
+} 
+
+model Etudiant {
+  id Int @id @default(autoincrement())
+  numINSCR Int @unique
+  filiere String
+  niveau String //maybe nbadalhom int
+  groupe String
+  userId Int @unique
+  user Utilisateur @relation(fields: [userId], references: [id])
+
+}
+
+model Enseignant{
+  id Int @id @default(autoincrement())
+  specialite String
+  // grade String
+  nbhSurveillance Int
+  userId Int @unique
+  user Utilisateur @relation(fields: [userId], references: [id])
+}
+
+model Agent{
+    id Int @id @default(autoincrement())
+    type TypeAgent
+    userId Int @unique
+    user Utilisateur @relation(fields: [userId], references: [id])
+}
+
+
+model Admin{
+  id Int @id @default(autoincrement())
+  userId Int @unique
+  user Utilisateur @relation(fields: [userId], references: [id])
+}
